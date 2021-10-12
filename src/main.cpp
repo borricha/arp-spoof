@@ -83,6 +83,7 @@ int main(int argc, char *argv[])
         info.target_mac = infomap[target_Ip];
         info_list.push_back(info);
     }
+    signal(SIGINT, sigint_handler);
     std::thread t1(infect, handle);
     std::thread t2(infect_2, handle);
     t1.join();
@@ -283,6 +284,7 @@ Mac get_mac(pcap_t *handle, Ip Ip)
 
 void sigint_handler(int signo)
 {
+    printf("\n");
     printf("공격 종료 합니다\n");
     thread = 0;
     signal(SIGINT, SIG_DFL);
